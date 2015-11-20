@@ -25,3 +25,9 @@ subdir-y += sprd
 subdir-y += synaptics
 subdir-y += xilinx
 subdir-y += zte
+
+ifeq ($(CONFIG_OF_OVERLAY),y)
+dtstree		:= $(srctree)/$(src)
+dtbo-y += $(patsubst $(dtstree)/%.dtso,%.dtbo, $(foreach d,$(subdir-y), $(wildcard $(dtstree)/$(d)/*.dtso)))
+always		:= $(dtbo-y)
+endif
