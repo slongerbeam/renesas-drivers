@@ -144,7 +144,13 @@ static struct v4l2_device *v4l2_async_notifier_find_v4l2_dev(
 	while (notifier->parent)
 		notifier = notifier->parent;
 
-	return notifier->v4l2_dev;
+	if (notifier->v4l2_dev)
+		return notifier->v4l2_dev;
+
+	if (notifier->sd)
+		return notifier->sd->v4l2_dev;
+
+	return NULL;
 }
 
 /*
