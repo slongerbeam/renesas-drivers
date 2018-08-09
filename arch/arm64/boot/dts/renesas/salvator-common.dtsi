@@ -285,33 +285,10 @@
 
 &csi20 {
 	status = "okay";
-
-	ports {
-		port@0 {
-			reg = <0>;
-			csi20_in: endpoint {
-				clock-lanes = <0>;
-				data-lanes = <1>;
-				remote-endpoint = <&adv7482_txb>;
-			};
-		};
-	};
 };
 
 &csi40 {
 	status = "okay";
-
-	ports {
-		port@0 {
-			reg = <0>;
-
-			csi40_in: endpoint {
-				clock-lanes = <0>;
-				data-lanes = <1 2 3 4>;
-				remote-endpoint = <&adv7482_txa>;
-			};
-		};
-	};
 };
 
 &du {
@@ -412,9 +389,10 @@
 		shunt-resistor-micro-ohms = <5000>;
 	};
 
-	video-receiver@70 {
+	video_decoder: video-receiver@70 {
 		compatible = "adi,adv7482";
 		reg = <0x70>;
+		status = "disabled";
 
 		#address-cells = <1>;
 		#size-cells = <0>;
@@ -437,26 +415,6 @@
 
 			adv7482_hdmi: endpoint {
 				remote-endpoint = <&hdmi_in_con>;
-			};
-		};
-
-		port@10 {
-			reg = <10>;
-
-			adv7482_txa: endpoint {
-				clock-lanes = <0>;
-				data-lanes = <1 2 3 4>;
-				remote-endpoint = <&csi40_in>;
-			};
-		};
-
-		port@11 {
-			reg = <11>;
-
-			adv7482_txb: endpoint {
-				clock-lanes = <0>;
-				data-lanes = <1>;
-				remote-endpoint = <&csi20_in>;
 			};
 		};
 	};
