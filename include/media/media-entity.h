@@ -912,6 +912,25 @@ void media_graph_walk_start(struct media_graph *graph,
 struct media_entity *media_graph_walk_next(struct media_graph *graph);
 
 /**
+ * media_pads_connected - Return whether pads are connected
+ *
+ * @source: the source pad
+ * @sink: the sink pad
+ *
+ * Returns state of connection between the given source and sink pad.
+ */
+enum media_path_state {
+	MEDIA_NO_PATH = 0,    /* no connection between pads */
+	MEDIA_PATH_CONNECTED, /* connection exists but no enabled paths */
+	MEDIA_PATH_ENABLED,   /* enabled path exists */
+};
+
+enum media_path_state  __media_pads_connected(struct media_pad *source,
+					      struct media_pad *sink);
+enum media_path_state media_pads_connected(struct media_pad *source,
+					   struct media_pad *sink);
+
+/**
  * media_pipeline_start - Mark a pipeline as streaming
  * @entity: Starting entity
  * @pipe: Media pipeline to be assigned to all entities in the pipeline.

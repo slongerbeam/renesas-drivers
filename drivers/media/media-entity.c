@@ -409,6 +409,76 @@ int media_entity_get_fwnode_pad(struct media_entity *entity,
 }
 EXPORT_SYMBOL_GPL(media_entity_get_fwnode_pad);
 
+enum media_path_state __media_pads_connected(struct media_pad *source,
+					     struct media_pad *sink)
+{
+	bool connected = false, enabled = false;
+	enum media_path_state state;
+	struct media_link *link;
+	struct media_pad *pad;
+	unsigned int i;
+
+	if (!(source->flags & MEDIA_PAD_FL_SOURCE) ||
+	    !(sink->flags & MEDIA_PAD_FL_SINK))
+		return MEDIA_NO_PATH;
+
+	list_for_each_entry(link, &source->entity->links, list) {
+		if (link->source != source)
+			continue;
+
+		enabled = link->flags & MEDIA_LNK_FL_ENABLED;
+
+		if (link->sink == sink) {
+			connected = true;
+			if (enabled)
+				return MEDIA_PATH_ENABLED;
+			/*
+			 * connected, but continue to search for an
+			 * enabled path.
+			 */
+			continue;
+		}
+
+		for (i = 0; i < link->sink->entity->num_pads; i++) {
+			pad = &link->sink->entity->pads[i];
+
+			if (!(pad->flags & MEDIA_PAD_FL_SOURCE))
+				continue;
+
+			state = __media_pads_connected(pad, sink);
+			switch (state) {
+			case MEDIA_PATH_ENABLED:
+				if (enabled)
+					return MEDIA_PATH_ENABLED;
+				connected = true;
+				break;
+			case MEDIA_PATH_CONNECTED:
+				/* continue to search for enabled path */
+				connected = true;
+				break;
+			default:
+				break;
+			}
+		}
+	}
+
+	return connected ? MEDIA_PATH_CONNECTED : MEDIA_NO_PATH;
+}
+EXPORT_SYMBOL_GPL(__media_pads_connected);
+
+enum media_path_state media_pads_connected(struct media_pad *source,
+					   struct media_pad *sink)
+{
+	struct media_device *mdev = source->entity->graph_obj.mdev;
+	enum media_path_state ret;
+
+	mutex_lock(&mdev->graph_mutex);
+	ret = __media_pads_connected(source, sink);
+	mutex_unlock(&mdev->graph_mutex);
+	return ret;
+}
+EXPORT_SYMBOL_GPL(media_pads_connected);
+
 /* -----------------------------------------------------------------------------
  * Pipeline management
  */
