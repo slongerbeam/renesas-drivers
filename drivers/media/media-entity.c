@@ -704,13 +704,17 @@ static struct media_link *media_add_link(struct list_head *head)
 static void __media_entity_remove_link(struct media_entity *entity,
 				       struct media_link *link)
 {
+	struct media_device *mdev = entity->graph_obj.mdev;
 	struct media_link *rlink, *tmp;
 	struct media_entity *remote;
+	struct media_device *rmdev;
 
 	if (link->source->entity == entity)
 		remote = link->sink->entity;
 	else
 		remote = link->source->entity;
+
+	rmdev = remote->graph_obj.mdev;
 
 	list_for_each_entry_safe(rlink, tmp, &remote->links, list) {
 		if (rlink != link->reverse)
@@ -722,22 +726,38 @@ static void __media_entity_remove_link(struct media_entity *entity,
 		/* Remove the remote link */
 		list_del(&rlink->list);
 		media_gobj_destroy(&rlink->graph_obj);
+
+		remote->num_links--;
+
+		if (link->sink->entity == entity &&
+		    rmdev->ops && rmdev->ops->link_notify)
+			rmdev->ops->link_notify(rlink, rlink->flags,
+						MEDIA_DEV_NOTIFY_LINK_REMOVED);
+
 		kfree(rlink);
 
-		if (--remote->num_links == 0)
+		if (remote->num_links == 0)
 			break;
 	}
 	list_del(&link->list);
 	media_gobj_destroy(&link->graph_obj);
+
+	if (link->source->entity == entity &&
+	    mdev->ops && mdev->ops->link_notify)
+		mdev->ops->link_notify(link, link->flags,
+				       MEDIA_DEV_NOTIFY_LINK_REMOVED);
+
 	kfree(link);
 }
 
 int
-media_create_pad_link(struct media_entity *source, u16 source_pad,
-			 struct media_entity *sink, u16 sink_pad, u32 flags)
+__media_create_pad_link(struct media_entity *source, u16 source_pad,
+			struct media_entity *sink, u16 sink_pad, u32 flags)
 {
 	struct media_link *link;
 	struct media_link *backlink;
+	struct media_device *mdev;
+	int ret;
 
 	BUG_ON(source == NULL || sink == NULL);
 	BUG_ON(source_pad >= source->num_pads);
@@ -751,9 +771,10 @@ media_create_pad_link(struct media_entity *source, u16 source_pad,
 	link->sink = &sink->pads[sink_pad];
 	link->flags = flags & ~MEDIA_LNK_FL_INTERFACE_LINK;
 
+	mdev = source->graph_obj.mdev;
+
 	/* Initialize graph object embedded at the new link */
-	media_gobj_create(source->graph_obj.mdev, MEDIA_GRAPH_LINK,
-			&link->graph_obj);
+	media_gobj_create(mdev, MEDIA_GRAPH_LINK, &link->graph_obj);
 
 	/* Create the backlink. Backlinks are used to help graph traversal and
 	 * are not reported to userspace.
@@ -769,9 +790,10 @@ media_create_pad_link(struct media_entity *source, u16 source_pad,
 	backlink->flags = flags;
 	backlink->is_backlink = true;
 
+	mdev = sink->graph_obj.mdev;
+
 	/* Initialize graph object embedded at the new link */
-	media_gobj_create(sink->graph_obj.mdev, MEDIA_GRAPH_LINK,
-			&backlink->graph_obj);
+	media_gobj_create(mdev, MEDIA_GRAPH_LINK, &backlink->graph_obj);
 
 	link->reverse = backlink;
 	backlink->reverse = link;
@@ -780,11 +802,38 @@ media_create_pad_link(struct media_entity *source, u16 source_pad,
 	sink->num_links++;
 	source->num_links++;
 
+	mdev = source->graph_obj.mdev;
+
+	if (mdev->ops && mdev->ops->link_notify) {
+		ret = mdev->ops->link_notify(link, flags,
+					     MEDIA_DEV_NOTIFY_LINK_CREATED);
+		if (ret < 0) {
+			__media_entity_remove_link(source, link);
+			__media_entity_remove_link(sink, backlink);
+			return ret;
+		}
+	}
+
 	return 0;
+}
+EXPORT_SYMBOL_GPL(__media_create_pad_link);
+
+int
+media_create_pad_link(struct media_entity *source, u16 source_pad,
+		      struct media_entity *sink, u16 sink_pad, u32 flags)
+{
+	struct media_device *mdev = source->graph_obj.mdev;
+	int ret;
+
+	mutex_lock(&mdev->graph_mutex);
+	ret = __media_create_pad_link(source, source_pad,
+				      sink, sink_pad, flags);
+	mutex_unlock(&mdev->graph_mutex);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(media_create_pad_link);
 
-int media_create_pad_links(const struct media_device *mdev,
+int media_create_pad_links(struct media_device *mdev,
 			   const u32 source_function,
 			   struct media_entity *source,
 			   const u16 source_pad,
@@ -796,33 +845,37 @@ int media_create_pad_links(const struct media_device *mdev,
 {
 	struct media_entity *entity;
 	unsigned function;
-	int ret;
+	int ret = 0;
+
+	mutex_lock(&mdev->graph_mutex);
 
 	/* Trivial case: 1:1 relation */
-	if (source && sink)
-		return media_create_pad_link(source, source_pad,
-					     sink, sink_pad, flags);
+	if (source && sink) {
+		ret = __media_create_pad_link(source, source_pad,
+					      sink, sink_pad, flags);
+		goto out;
+	}
 
 	/* Worse case scenario: n:n relation */
 	if (!source && !sink) {
 		if (!allow_both_undefined)
-			return 0;
+			goto out;
 		media_device_for_each_entity(source, mdev) {
 			if (source->function != source_function)
 				continue;
 			media_device_for_each_entity(sink, mdev) {
 				if (sink->function != sink_function)
 					continue;
-				ret = media_create_pad_link(source, source_pad,
-							    sink, sink_pad,
-							    flags);
+				ret = __media_create_pad_link(source, source_pad,
+							      sink, sink_pad,
+							      flags);
 				if (ret)
-					return ret;
+					goto out;
 				flags &= ~(MEDIA_LNK_FL_ENABLED |
 					   MEDIA_LNK_FL_IMMUTABLE);
 			}
 		}
-		return 0;
+		goto out;
 	}
 
 	/* Handle 1:n and n:1 cases */
@@ -836,16 +889,19 @@ int media_create_pad_links(const struct media_device *mdev,
 			continue;
 
 		if (source)
-			ret = media_create_pad_link(source, source_pad,
-						    entity, sink_pad, flags);
+			ret = __media_create_pad_link(source, source_pad,
+						      entity, sink_pad, flags);
 		else
-			ret = media_create_pad_link(entity, source_pad,
-						    sink, sink_pad, flags);
+			ret = __media_create_pad_link(entity, source_pad,
+						      sink, sink_pad, flags);
 		if (ret)
-			return ret;
+			goto out;
 		flags &= ~(MEDIA_LNK_FL_ENABLED | MEDIA_LNK_FL_IMMUTABLE);
 	}
-	return 0;
+
+out:
+	mutex_unlock(&mdev->graph_mutex);
+	return ret;
 }
 EXPORT_SYMBOL_GPL(media_create_pad_links);
 

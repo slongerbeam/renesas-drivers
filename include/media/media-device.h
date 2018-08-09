@@ -169,6 +169,8 @@ struct usb_device;
 /* Supported link_notify @notification values. */
 #define MEDIA_DEV_NOTIFY_PRE_LINK_CH	0
 #define MEDIA_DEV_NOTIFY_POST_LINK_CH	1
+#define MEDIA_DEV_NOTIFY_LINK_CREATED	2
+#define MEDIA_DEV_NOTIFY_LINK_REMOVED	3
 
 /**
  * media_entity_enum_init - Initialise an entity enumeration

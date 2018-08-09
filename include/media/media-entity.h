@@ -668,6 +668,9 @@ static inline void media_entity_cleanup(struct media_entity *entity) {}
  *    Before calling this function, media_entity_pads_init() and
  *    media_device_register_entity() should be called previously for both ends.
  */
+__must_check int __media_create_pad_link(struct media_entity *source,
+			u16 source_pad, struct media_entity *sink,
+			u16 sink_pad, u32 flags);
 __must_check int media_create_pad_link(struct media_entity *source,
 			u16 source_pad, struct media_entity *sink,
 			u16 sink_pad, u32 flags);
@@ -715,7 +718,7 @@ __must_check int media_create_pad_link(struct media_entity *source,
  *    media_device_register_entity() should be called previously for the
  *    entities to be linked.
  */
-int media_create_pad_links(const struct media_device *mdev,
+int media_create_pad_links(struct media_device *mdev,
 			   const u32 source_function,
 			   struct media_entity *source,
 			   const u16 source_pad,
