@@ -987,12 +987,38 @@ static void rvin_notify(struct v4l2_subdev *sd,
 	}
 }
 
+static void rvin_mc_notify(struct v4l2_subdev *sd, unsigned int notification,
+			   void *arg)
+{
+	struct media_entity *entity = &sd->entity;
+	int i;
+
+	if (notification != V4L2_DEVICE_NOTIFY_EVENT)
+		return;
+
+	for (i = 0; i < entity->num_pads; i++) {
+		struct media_pad *pad = &entity->pads[i];
+		struct rvin_pad_vdev_list *vdl;
+		struct rvin_pad_vdev *padv;
+
+		vdl = to_pad_vdev_list(sd, pad->index);
+		if (!vdl)
+			continue;
+
+		spin_lock(&vdl->lock);
+		list_for_each_entry(padv, &vdl->vdev_list, list) {
+			if (!padv->path_enabled)
+				continue;
+			v4l2_event_queue(padv->vdev, arg);
+		}
+		spin_unlock(&vdl->lock);
+	}
+}
+
 int rvin_v4l2_register(struct rvin_dev *vin)
 {
 	struct video_device *vdev = &vin->vdev;
 	int ret;
-
-	vin->v4l2_dev.notify = rvin_notify;
 
 	/* video node */
 	vdev->v4l2_dev = &vin->v4l2_dev;
@@ -1011,9 +1037,11 @@ int rvin_v4l2_register(struct rvin_dev *vin)
 	vin->format.colorspace = RVIN_DEFAULT_COLORSPACE;
 
 	if (vin->info->use_mc) {
+		vin->v4l2_dev.notify = rvin_mc_notify;
 		vdev->fops = &rvin_mc_fops;
 		vdev->ioctl_ops = &rvin_mc_ioctl_ops;
 	} else {
+		vin->v4l2_dev.notify = rvin_notify;
 		vdev->fops = &rvin_fops;
 		vdev->ioctl_ops = &rvin_ioctl_ops;
 		rvin_reset_format(vin);
