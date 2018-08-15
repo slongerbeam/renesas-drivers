@@ -87,6 +87,209 @@ static unsigned int rvin_group_get_mask(struct rvin_dev *vin,
 }
 
 /*
+ * Allocate an array of list_head's, one list_head for each pad,
+ * to hold the list of video devices reachable from that pad, and
+ * attach the array to the given subdevice's host_priv pointer.
+ */
+static int rvin_group_alloc_pad_vdev_lists(struct rvin_group *group,
+					   struct v4l2_subdev *sd)
+{
+	struct media_entity *entity = &sd->entity;
+	struct rvin_pad_vdev_list *vdl;
+	int pad;
+
+	vdl = devm_kcalloc(sd->dev, entity->num_pads, sizeof(*vdl),
+			   GFP_KERNEL);
+	if (!vdl)
+		return -ENOMEM;
+
+	for (pad = 0; pad < entity->num_pads; pad++) {
+		struct rvin_pad_vdev_list *pad_vdl = &vdl[pad];
+
+		INIT_LIST_HEAD(&pad_vdl->vdev_list);
+		spin_lock_init(&pad_vdl->lock);
+	}
+
+	/* attach to the subdev's host private pointer */
+	sd->host_priv = vdl;
+
+	return 0;
+}
+
+/* Adds given video device to given source pad vdev list. */
+static int rvin_group_pad_vdev_add(struct media_pad *source,
+				   struct rvin_dev *vin,
+				   enum media_path_state state)
+{
+	struct media_device *mdev = &vin->group->mdev;
+	struct media_entity *entity = source->entity;
+	struct rvin_pad_vdev_list *vdl;
+	struct rvin_pad_vdev *padv;
+	struct v4l2_subdev *sd;
+
+	sd = media_entity_to_v4l2_subdev(entity);
+	vdl = to_pad_vdev_list(sd, source->index);
+
+	/* if this vin already added, update path_enabled and exit */
+	list_for_each_entry(padv, &vdl->vdev_list, list) {
+		if (padv->vdev == &vin->vdev) {
+			spin_lock(&vdl->lock);
+			padv->path_enabled = (state == MEDIA_PATH_ENABLED);
+			spin_unlock(&vdl->lock);
+			return 0;
+		}
+	}
+
+	padv = devm_kzalloc(sd->dev, sizeof(*padv), GFP_KERNEL);
+	if (!padv)
+		return -ENOMEM;
+
+	/* attach this vdev to this pad */
+	padv->vdev = &vin->vdev;
+	padv->path_enabled = (state == MEDIA_PATH_ENABLED);
+
+	dev_dbg(mdev->dev, "adding VIN%d to pad %s:%u\n",
+		vin->id, sd->name, source->index);
+	dev_dbg(mdev->dev, "path from %s:%u to VIN%d is %s\n",
+		sd->name, source->index, vin->id,
+		padv->path_enabled ? "enabled" : "disabled");
+
+	spin_lock(&vdl->lock);
+	list_add_tail(&padv->list, &vdl->vdev_list);
+	spin_unlock(&vdl->lock);
+
+	return 0;
+}
+
+static void rvin_group_pad_vdev_remove(struct media_pad *source,
+				       struct rvin_dev *vin)
+{
+	struct media_device *mdev = &vin->group->mdev;
+	struct media_entity *entity = source->entity;
+	struct rvin_pad_vdev *padv, *tmp;
+	struct rvin_pad_vdev_list *vdl;
+	struct v4l2_subdev *sd;
+
+	sd = media_entity_to_v4l2_subdev(entity);
+	vdl = to_pad_vdev_list(sd, source->index);
+
+	spin_lock(&vdl->lock);
+
+	list_for_each_entry_safe(padv, tmp, &vdl->vdev_list, list) {
+		if (padv->vdev == &vin->vdev) {
+			dev_dbg(mdev->dev, "removing VIN%d from pad %s:%u\n",
+				vin->id, sd->name, source->index);
+			list_del(&padv->list);
+			devm_kfree(sd->dev, padv);
+			break;
+		}
+	}
+
+	spin_unlock(&vdl->lock);
+}
+
+/*
+ * Update the list of reachable video devices from the given subdevice
+ * source pad.
+ */
+static int rvin_group_update_pad_vdev_list(struct rvin_group *group,
+					   struct media_pad *source,
+					   bool prune)
+{
+	struct media_entity *entity = source->entity;
+	struct v4l2_subdev *sd;
+	int i, ret;
+
+	sd = media_entity_to_v4l2_subdev(entity);
+
+	if (!sd->host_priv) {
+		ret = rvin_group_alloc_pad_vdev_lists(group, sd);
+		if (ret)
+			return ret;
+		if (prune)
+			return 0;
+	}
+
+	for (i = 0; i < RCAR_VIN_NUM; i++) {
+		struct rvin_dev *vin = group->vin[i];
+		enum media_path_state state;
+
+		if (!vin)
+			continue;
+
+		state = __media_pads_connected(source, &vin->pad);
+
+		if (state != MEDIA_NO_PATH && !prune) {
+			ret = rvin_group_pad_vdev_add(source, vin, state);
+			if (ret)
+				return ret;
+		} else if (state == MEDIA_NO_PATH && prune) {
+			rvin_group_pad_vdev_remove(source, vin);
+		}
+	}
+
+	return 0;
+}
+
+static int rvin_group_update_vdev_lists(struct rvin_group *group, bool prune)
+{
+	struct media_device *mdev = &group->mdev;
+	struct media_pad *pad;
+	int ret = 0;
+
+	media_device_for_each_pad(pad, mdev) {
+		if (!is_media_entity_v4l2_subdev(pad->entity))
+			continue;
+		if (!(pad->flags & MEDIA_PAD_FL_SOURCE))
+			continue;
+		ret = rvin_group_update_pad_vdev_list(group, pad, prune);
+		if (ret)
+			break;
+	}
+
+	return ret;
+}
+
+static void rvin_group_update_vdev_enabled_paths(struct rvin_group *group)
+{
+	struct media_device *mdev = &group->mdev;
+	struct media_pad *pad;
+
+	media_device_for_each_pad(pad, mdev) {
+		struct rvin_pad_vdev_list *vdl;
+		struct rvin_pad_vdev *padv;
+		struct v4l2_subdev *sd;
+		struct rvin_dev *vin;
+
+		if (!is_media_entity_v4l2_subdev(pad->entity))
+			continue;
+
+		sd = media_entity_to_v4l2_subdev(pad->entity);
+		vdl = to_pad_vdev_list(sd, pad->index);
+		if (!vdl)
+			continue;
+
+		list_for_each_entry(padv, &vdl->vdev_list, list) {
+			enum media_path_state state;
+
+			vin = container_of(padv->vdev, struct rvin_dev, vdev);
+
+			state = __media_pads_connected(pad, &vin->pad);
+			WARN_ON(state == MEDIA_NO_PATH);
+
+			spin_lock(&vdl->lock);
+			padv->path_enabled = (state == MEDIA_PATH_ENABLED);
+			spin_unlock(&vdl->lock);
+
+			dev_dbg(mdev->dev,
+				"path from %s:%u to VIN%d is %s\n",
+				sd->name, pad->index, vin->id,
+				padv->path_enabled ? "enabled" : "disabled");
+		}
+	}
+}
+
+/*
  * Link setup for the links between a VIN and a CSI-2 receiver is a bit
  * complex. The reason for this is that the register controlling routing
  * is not present in each VIN instance. There are special VINs which
@@ -172,6 +375,8 @@ static int rvin_group_pre_post_link_notify(struct media_link *link, u32 flags,
 static int rvin_group_link_notify(struct media_link *link, u32 flags,
 				  unsigned int notification)
 {
+	struct rvin_group *group = container_of(link->graph_obj.mdev,
+						struct rvin_group, mdev);
 	int ret;
 
 	ret = v4l2_pipeline_link_notify(link, flags, notification);
@@ -179,12 +384,29 @@ static int rvin_group_link_notify(struct media_link *link, u32 flags,
 		return ret;
 
 	switch (notification) {
+	case MEDIA_DEV_NOTIFY_LINK_CREATED:
+	case MEDIA_DEV_NOTIFY_LINK_REMOVED:
+		/* a link was created or removed, update pad vdev lists */
+		ret = rvin_group_update_vdev_lists(
+			group, notification == MEDIA_DEV_NOTIFY_LINK_REMOVED);
+		if (ret)
+			return ret;
+		break;
+
 	case MEDIA_DEV_NOTIFY_PRE_LINK_CH:
 	case MEDIA_DEV_NOTIFY_POST_LINK_CH:
 		ret = rvin_group_pre_post_link_notify(link, flags,
 						      notification);
 		if (ret < 0)
 			return ret;
+
+		/*
+		 * After enabling or disabling a link, refresh paths_enabled
+		 * for each VIN of each subdev in the media graph.
+		 */
+		if (notification == MEDIA_DEV_NOTIFY_POST_LINK_CH)
+			rvin_group_update_vdev_enabled_paths(group);
+
 		break;
 	}
 

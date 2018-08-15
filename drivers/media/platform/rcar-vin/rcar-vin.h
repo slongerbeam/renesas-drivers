@@ -211,6 +211,32 @@ struct rvin_dev {
 
 #define vin_to_source(vin)		((vin)->digital->subdev)
 
+/*
+ * to support control inheritance and subdevice event forwarding
+ * to video devices, this structure contains a list_head of video devices
+ * that can be reached from a subdevice pad. Note that only the lists
+ * in source pads get populated, sink pads have empty lists.
+ */
+struct rvin_pad_vdev_list {
+	struct list_head vdev_list;
+	spinlock_t lock; /* protect the list */
+};
+
+static inline struct rvin_pad_vdev_list *
+to_pad_vdev_list(struct v4l2_subdev *sd, int pad)
+{
+	struct rvin_pad_vdev_list *vdl = sd->host_priv;
+
+	return vdl ? &vdl[pad] : NULL;
+}
+
+/* an entry in a pad's video device list */
+struct rvin_pad_vdev {
+	struct video_device *vdev;
+	bool path_enabled;
+	struct list_head list;
+};
+
 /* Debug */
 #define vin_dbg(d, fmt, arg...)		dev_dbg(d->dev, fmt, ##arg)
 #define vin_info(d, fmt, arg...)	dev_info(d->dev, fmt, ##arg)
