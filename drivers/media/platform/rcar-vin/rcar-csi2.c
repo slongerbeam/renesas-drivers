@@ -363,6 +363,7 @@ struct rcar_csi2 {
 
 	unsigned short lanes;
 	unsigned char lane_swap[4];
+	struct notifier_block nb;
 };
 
 static inline struct rcar_csi2 *sd_to_csi2(struct v4l2_subdev *sd)
@@ -662,7 +663,7 @@ static int rcsi2_notify_bound(struct v4l2_async_notifier *notifier,
 			      struct v4l2_async_subdev *asd)
 {
 	struct rcar_csi2 *priv = notifier_to_csi2(notifier);
-	int pad;
+	int pad, ret;
 
 	pad = media_entity_get_fwnode_pad(&subdev->entity, asd->match.fwnode,
 					  MEDIA_PAD_FL_SOURCE);
@@ -675,10 +676,21 @@ static int rcsi2_notify_bound(struct v4l2_async_notifier *notifier,
 
 	dev_dbg(priv->dev, "Bound %s pad: %d\n", subdev->name, pad);
 
-	return media_create_pad_link(&subdev->entity, pad,
-				     &priv->subdev.entity, 0,
-				     MEDIA_LNK_FL_ENABLED |
-				     MEDIA_LNK_FL_IMMUTABLE);
+	ret = media_create_pad_link(&subdev->entity, pad,
+				    &priv->subdev.entity, 0,
+				    MEDIA_LNK_FL_ENABLED |
+				    MEDIA_LNK_FL_IMMUTABLE);
+	if (ret) {
+		dev_err(priv->dev, "Failed to link remote device %s\n",
+			subdev->name);
+	} else {
+		dev_info(priv->dev, "Linked remote device %s\n", subdev->name);
+	}
+
+	if (priv->subdev.v4l2_dev)
+		ret = v4l2_device_register_subdev_nodes(priv->subdev.v4l2_dev);
+
+	return ret;
 }
 
 static void rcsi2_notify_unbind(struct v4l2_async_notifier *notifier,
@@ -732,17 +744,13 @@ static int rcsi2_parse_v4l2(struct rcar_csi2 *priv,
 	return 0;
 }
 
-static int rcsi2_parse_dt(struct rcar_csi2 *priv)
+static int rcsi2_await_remote_v4l2(struct rcar_csi2 *priv)
 {
-	struct device_node *ep;
 	struct v4l2_fwnode_endpoint v4l2_ep;
+	struct device_node *ep;
 	int ret;
 
 	ep = of_graph_get_endpoint_by_regs(priv->dev->of_node, 0, 0);
-	if (!ep) {
-		dev_err(priv->dev, "Not connected to subdevice\n");
-		return -EINVAL;
-	}
 
 	ret = v4l2_fwnode_endpoint_parse(of_fwnode_handle(ep), &v4l2_ep);
 	if (ret) {
@@ -773,11 +781,73 @@ static int rcsi2_parse_dt(struct rcar_csi2 *priv)
 	priv->notifier.subdevs[0] = &priv->asd;
 	priv->notifier.ops = &rcar_csi2_notify_ops;
 
-	dev_dbg(priv->dev, "Found '%pOF'\n",
+	dev_dbg(priv->dev, "Awaiting '%pOF'\n",
 		to_of_node(priv->asd.match.fwnode));
 
 	return v4l2_async_subdev_notifier_register(&priv->subdev,
 						   &priv->notifier);
+}
+
+static bool rcsi2_ofnode_is_remote_subdev(struct rcar_csi2 *priv,
+					  struct device_node *ep)
+{
+	struct device_node *great_parent_ep = ep;
+
+	great_parent_ep = ep->parent;
+	great_parent_ep = great_parent_ep ? great_parent_ep->parent : NULL;
+
+	return priv->dev->of_node == great_parent_ep;
+}
+
+static int rcsi2_of_notify(struct notifier_block *nb,
+			   unsigned long action, void *data)
+{
+	struct rcar_csi2 *priv = container_of(nb, struct rcar_csi2, nb);
+	struct of_reconfig_data *rd = data;
+	int ret = 0;
+
+	switch (of_reconfig_get_state_change(action, rd)) {
+	case OF_RECONFIG_CHANGE_ADD:
+		if (rcsi2_ofnode_is_remote_subdev(priv, rd->dn)) {
+			ret = rcsi2_await_remote_v4l2(priv);
+			if (ret)
+				dev_err(priv->dev,
+					"Failed to register for subdev\n");
+		}
+		break;
+
+	default:
+		break;
+	}
+
+	return ret;
+}
+
+static int rcsi2_await_remote_node(struct rcar_csi2 *priv)
+{
+	if (!priv->nb.notifier_call) {
+		priv->nb.notifier_call = rcsi2_of_notify;
+		return of_reconfig_notifier_register(&priv->nb);
+	}
+
+	return 0;
+}
+
+static int rcsi2_parse_dt(struct rcar_csi2 *priv)
+{
+	struct device_node *ep;
+	int ret;
+
+	ep = of_graph_get_endpoint_by_regs(priv->dev->of_node, 0, 0);
+	if (!ep) {
+		dev_info(priv->dev, "Remote subdevice is assumed but not yet connected\n");
+		return rcsi2_await_remote_node(priv);
+	}
+
+	ret = rcsi2_await_remote_v4l2(priv);
+	of_node_put(ep);
+
+	return ret;
 }
 
 /* -----------------------------------------------------------------------------
