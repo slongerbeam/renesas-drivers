@@ -223,7 +223,6 @@ struct rvin_dev {
  *
  * @mdev:		media device which represents the group
  *
- * @lock:		protects the count, notifier, vin and csi members
  * @count:		number of enabled VIN instances found in DT
  * @notifier:		pointer to the notifier of a VIN which handles the
  *			groups async sub-devices.
@@ -236,7 +235,6 @@ struct rvin_group {
 
 	struct media_device mdev;
 
-	struct mutex lock;
 	unsigned int count;
 	struct v4l2_async_notifier *notifier;
 	struct rvin_dev *vin[RCAR_VIN_NUM];
