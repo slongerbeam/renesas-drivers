@@ -111,8 +111,8 @@ static unsigned int rvin_group_get_mask(struct rvin_dev *vin,
  * Please note that no link can be enabled if any VIN in the group is
  * currently open.
  */
-static int rvin_group_link_notify(struct media_link *link, u32 flags,
-				  unsigned int notification)
+static int rvin_group_pre_post_link_notify(struct media_link *link, u32 flags,
+					   unsigned int notification)
 {
 	struct rvin_group *group = container_of(link->graph_obj.mdev,
 						struct rvin_group, mdev);
@@ -123,10 +123,6 @@ static int rvin_group_link_notify(struct media_link *link, u32 flags,
 	struct media_pad *csi_pad;
 	struct rvin_dev *vin = NULL;
 	int csi_id, ret;
-
-	ret = v4l2_pipeline_link_notify(link, flags, notification);
-	if (ret)
-		return ret;
 
 	/* Only care about link enablement for VIN nodes. */
 	if (!(flags & MEDIA_LNK_FL_ENABLED) ||
@@ -185,6 +181,28 @@ out:
 	mutex_unlock(&group->lock);
 
 	return ret;
+}
+
+static int rvin_group_link_notify(struct media_link *link, u32 flags,
+				  unsigned int notification)
+{
+	int ret;
+
+	ret = v4l2_pipeline_link_notify(link, flags, notification);
+	if (ret)
+		return ret;
+
+	switch (notification) {
+	case MEDIA_DEV_NOTIFY_PRE_LINK_CH:
+	case MEDIA_DEV_NOTIFY_POST_LINK_CH:
+		ret = rvin_group_pre_post_link_notify(link, flags,
+						      notification);
+		if (ret < 0)
+			return ret;
+		break;
+	}
+
+	return 0;
 }
 
 static const struct media_device_ops rvin_media_ops = {
