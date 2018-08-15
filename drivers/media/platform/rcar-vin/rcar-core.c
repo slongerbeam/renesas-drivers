@@ -138,9 +138,6 @@ static int rvin_group_pre_post_link_notify(struct media_link *link, u32 flags,
 	vin = container_of(vdev, struct rvin_dev, vdev);
 	master_id = rvin_group_id_to_master(vin->id);
 
-	if (WARN_ON(!group->vin[master_id]))
-		return -ENODEV;
-
 	/* Build a mask for already enabled links. */
 	for (i = master_id; i < master_id + 4; i++) {
 		if (!group->vin[i])
@@ -225,7 +222,6 @@ static int rvin_group_init(struct rvin_group *group, struct rvin_dev *vin)
 	struct media_device *mdev = &group->mdev;
 	const struct of_device_id *match;
 	struct device_node *np;
-	int ret;
 
 	/* Count number of VINs in the system */
 	group->count = 0;
@@ -236,7 +232,6 @@ static int rvin_group_init(struct rvin_group *group, struct rvin_dev *vin)
 	vin_dbg(vin, "found %u enabled VIN's in DT", group->count);
 
 	mdev->dev = vin->dev;
-	mdev->ops = &rvin_media_ops;
 
 	match = of_match_node(vin->dev->driver->of_match_table,
 			      vin->dev->of_node);
@@ -248,11 +243,7 @@ static int rvin_group_init(struct rvin_group *group, struct rvin_dev *vin)
 
 	media_device_init(mdev);
 
-	ret = media_device_register(&group->mdev);
-	if (ret)
-		rvin_group_cleanup(group);
-
-	return ret;
+	return 0;
 }
 
 static void rvin_group_release(struct kref *kref)
@@ -593,6 +584,8 @@ static int rvin_group_notify_complete(struct v4l2_async_notifier *notifier)
 	unsigned int i;
 	int ret;
 
+	mdev->ops = &rvin_media_ops;
+
 	ret = v4l2_device_register_subdev_nodes(&vin->v4l2_dev);
 	if (ret) {
 		vin_err(vin, "Failed to register subdev nodes\n");
@@ -645,9 +638,12 @@ static int rvin_group_notify_complete(struct v4l2_async_notifier *notifier)
 			break;
 		}
 	}
-	mutex_unlock(&mdev->graph_mutex);
 
-	return ret;
+	mutex_unlock(&mdev->graph_mutex);
+	if (ret)
+		return ret;
+
+	return media_device_register(mdev);
 }
 
 static void rvin_group_notify_unbind(struct v4l2_async_notifier *notifier,
